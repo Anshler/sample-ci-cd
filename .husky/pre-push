@@ -2,7 +2,8 @@
 npm test || exit 1
 
 # Secret scan (gitleaks) — catches leaked credentials BEFORE they leave your machine
-# This is the PRIMARY defense. The CI secret-scan job is the safety net.
+# This is your last chance to catch secrets locally.
+# GitGuardian handles secret scanning on the remote side.
 if command -v gitleaks >/dev/null 2>&1; then
   echo "→ Scanning for secrets (gitleaks)..."
   gitleaks detect --source . --config .gitleaks.toml --verbose --redact
@@ -19,8 +20,8 @@ if command -v gitleaks >/dev/null 2>&1; then
   echo "✓ No secrets found."
 else
   echo "⚠️  gitleaks not installed — skipping local secret scan."
-  echo "   CI will still catch secrets, but by then the push has already"
-  echo "   reached GitHub. For your own safety, install gitleaks:"
+  echo "   GitGuardian will still catch secrets on the remote, but by"
+  echo "   then the push has already reached GitHub. Install gitleaks:"
   echo "     winget install gitleaks    # Windows"
   echo "     brew install gitleaks       # macOS"
   echo ""
