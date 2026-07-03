@@ -4,7 +4,7 @@ A dead-simple Click Counter website used to demonstrate CI/CD with GitHub Action
 
 Part of the **Orientation Seminar** workshop for new AI lab students.
 
-🔗 **Production:** [mainguychinhnhan2010-svg.github.io/sample-ci-cd](https://mainguychinhnhan2010-svg.github.io/sample-ci-cd/)
+🔗 **Production:** [anshler.github.io/sample-ci-cd](https://anshler.github.io/sample-ci-cd/)
 
 ## What this is
 
@@ -12,7 +12,7 @@ This is a companion demo project that shows:
 
 - **Branch protection:** `master` is locked — no direct pushes
 - **Automated testing:** unit tests (Jest) + integration tests (Cypress)
-- **Secret scanning:** gitleaks scans every commit for accidentally committed secrets
+- **Secret scanning:** local gitleaks pre-push hook + GitGuardian on the remote
 - **Performance & accessibility budgets:** Lighthouse CI gates every PR
 - **CI/CD pipeline:** push → scan + test → deploy to GitHub Pages
 - **PR workflow:** branch → PR → status checks → review → merge
@@ -51,7 +51,7 @@ git push --no-verify             # skip hooks (emergency escape hatch)
 
 **Two checks:**
 1. **Unit tests** (`npm test`) — catches broken logic before it leaves your machine
-2. **Secret scan** (`gitleaks detect`) — catches leaked API keys, tokens, and passwords before they leave your machine. If gitleaks isn't installed locally, the hook warns and continues (CI will still catch secrets, but by then it's too late — rotation is required).
+2. **Secret scan** (`gitleaks detect`) — catches leaked API keys, tokens, and passwords before they leave your machine. If gitleaks isn't installed locally, the hook warns and continues (GitGuardian will still catch secrets on the remote, but by then it's too late — rotation is required).
 
 ## How it works
 
@@ -63,21 +63,21 @@ git push --no-verify             # skip hooks (emergency escape hatch)
 | `tests/integration/counter.cy.js` | Cypress tests for the full page |
 | `.github/workflows/ci-cd.yml` | The CI/CD pipeline |
 | `.github/workflows/lighthouse-monitor.yml` | Scheduled Lighthouse monitoring against production |
-| `.gitleaks.toml` | Secret scanning rules — catches API keys, tokens, passwords |
+| `.gitleaks.toml` | Local secret scanning rules — catches API keys, tokens, passwords |
 | `.lighthouserc.json` | Lighthouse performance & accessibility budget config |
 
 ## The pipeline
 
 ```
                                                    ┌── integration-test-preview
-PR opened / push ──→ unit-test + secret-scan ──→ deploy-preview ──→ lighthouse-preview
+PR opened / push ──→ unit-test ──→ deploy-preview ──→ lighthouse-preview
                                                    └── deploy ──────────→ integration-test
                                                         (master only)       (Cypress against production)
 ```
 
 - **Unit tests** (Jest) run on every push and every PR
-- **Secret scanning** (gitleaks) runs in parallel with unit tests — scans every commit for leaked credentials
-- **Deploy** fires after both unit tests AND secret scan pass — to `/preview/pr-<N>/` for PRs, to the root `/` for master
+- **Secret scanning** is handled by GitGuardian on the remote — no CI job needed
+- **Deploy** fires after unit tests pass — to `/preview/pr-<N>/` for PRs, to the root `/` for master
 - **Integration tests** (Cypress) run **against the deployed URL**, not a local server — tests the real thing
 - **PR comment** posts the preview URL only after all checks pass
 - **Auto-cleanup:** when a PR is closed or merged, its preview directory is deleted
@@ -95,16 +95,16 @@ Testing against `localhost` tells you the code works on the CI machine. Testing 
 
 **The problem:** You commit a config file with a test API key. Or a `.env` with a database password. Or a private key you meant to `.gitignore`. It looks innocent — just another file. Three months later, someone scrapes your repo history and starts mining Bitcoin on your lab's AWS account.
 
-**The industry-standard approach: defense in depth.** A single CI check isn't enough — by the time CI scans, the secret is already on GitHub. You need layers:
+**The defense-in-depth approach:**
 
 | Layer | Where | Tool | If it fires... |
 |---|---|---|---|
 | **Pre-push hook** 🛡️ | Your machine | `gitleaks` | Secret never leaves your machine. Fix and push again. |
-| **CI pipeline** 🪂 | GitHub | `gitleaks` (same tool) | Secret already on remote. **Rotation is mandatory.** |
+| **Remote monitoring** 🪂 | GitHub | **GitGuardian** | Secret already on remote. **Rotation is mandatory.** |
 
 #### Layer 1: Pre-push hook (primary defense)
 
-The [husky pre-push hook](.husky/pre-push) runs `gitleaks detect` before every `git push`. If a secret is found, the push is **blocked on your machine** — it never reaches GitHub. This is the same pattern as the existing test hook:
+The [husky pre-push hook](.husky/pre-push) runs `gitleaks detect` before every `git push`. If a secret is found, the push is **blocked on your machine** — it never reaches GitHub:
 
 ```bash
 git push                         # runs npm test + gitleaks first
@@ -112,7 +112,7 @@ git push                         # runs npm test + gitleaks first
 git push --no-verify             # skip hooks (emergency escape hatch)
 ```
 
-If gitleaks isn't installed, the hook warns you and lets the push through — CI will still catch secrets, but it'll be too late:
+If gitleaks isn't installed, the hook warns you and lets the push through — GitGuardian will still catch secrets on the remote, but by then it's too late:
 
 ```bash
 # Install gitleaks (one-time)
@@ -121,19 +121,19 @@ brew install gitleaks       # macOS
 sudo apt install gitleaks   # Linux
 ```
 
-#### Layer 2: CI pipeline (safety net)
+#### Layer 2: GitGuardian (remote safety net)
 
-The `secret-scan` job in CI is the **last line of defense**. It runs against every push and PR, scanning all commits in the branch. Uses [`gitleaks/gitleaks-action@v2`](https://github.com/gitleaks/gitleaks-action) with custom rules in [`.gitleaks.toml`](.gitleaks.toml).
+[GitGuardian](https://www.gitguardian.com/) monitors the repository for secrets that were pushed. If a secret is detected, **GitGuardian alerts you immediately**.
 
-**Custom rules detect:** generic API keys, GitHub PATs, AWS keys, private key headers, Slack webhooks, npm tokens — plus ~100 built-in rules (GitLab tokens, GCP/Azure keys, Stripe keys, JWT tokens, `.env` files, DB connection strings, etc.)
+**Custom rules in [`.gitleaks.toml`](.gitleaks.toml) detect:** generic API keys, GitHub PATs, AWS keys, private key headers, Slack webhooks, npm tokens — plus ~100 built-in rules (GitLab tokens, GCP/Azure keys, Stripe keys, JWT tokens, `.env` files, DB connection strings, etc.)
 
-**⚠️ When CI catches a secret, it's already on GitHub. You must:**
+**⚠️ When GitGuardian catches a secret, it's already on GitHub. You must:**
 1. **Rotate the credential immediately** — it's compromised
 2. Remove it from the commit (`git rebase -i` or amend)
 3. `git push --force` the cleaned history
 4. Verify the secret is no longer in GitHub's history
 
-The pre-push hook exists specifically so this never happens. CI is the parachute — you don't want to need it.
+The pre-push hook exists specifically so this never happens. GitGuardian is the parachute — you don't want to need it.
 
 ### Performance & accessibility budgets
 
@@ -174,7 +174,7 @@ Also triggerable manually via `workflow_dispatch` — pass a custom URL or leave
    - ✅ Require approvals (1)
    - ✅ Require status checks to pass before merging
    - ✅ Require branches to be up to date before merging
-4. Add status checks: `Unit Tests`, `Secret Scan`, `Integration Tests (Preview)`, `Lighthouse Audit (Preview)`
+4. Add status checks: `Unit Tests`, `Integration Tests (Preview)`, `Lighthouse Audit (Preview)`
 
 See [BRANCH-PROTECTION.md](BRANCH-PROTECTION.md) for detailed setup instructions.
 
